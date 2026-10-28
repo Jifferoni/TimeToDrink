@@ -1,4 +1,7 @@
-Time To Drink / Vanilla 1.12 addon  v1.3.4 - Modernized by Jifferoni
+<img width="1584" height="672" alt="image" src="https://github.com/user-attachments/assets/8f741add-ae88-4090-8729-2a99ee546f5f" />
+
+Time To Drink / Vanilla 1.12 addon  v1.3.4
+Modernized by Jifferoni and Claude
 =============================================================================
 
 
