@@ -1,3 +1,5 @@
+https://github.com/Jifferoni/TimeToDrink/blob/main/preview.jpg?raw=true
+
 Time To Drink - Octowow / vanilla 1.12 addon  v1.3.4
 ==================================================
 
