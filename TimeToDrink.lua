@@ -1,5 +1,5 @@
 --[[--------------------------------------------------------------------
-  Time To Drink  -  Octowow / vanilla 1.12 addon   v1.3.4
+  Time To Drink  -  Octowow / vanilla 1.12 addon   v1.4.3
   Watches a chosen healer's mana while you are in a 5-man party
   (disabled in raids) and announces in party chat when they drop
   below a configurable threshold, repeating on an adjustable cooldown.
@@ -106,7 +106,8 @@ local function TTD_CreateAlertFrame()
     a:SetWidth(800); a:SetHeight(60)
     a:SetPoint("TOP", UIParent, "TOP", 0, -170)
     local fs = a:CreateFontString("TimeToDrinkAlertText", "OVERLAY")
-    fs:SetFont("Fonts\\FRIZQT__.TTF", 26, "THICKOUTLINE")
+    fs:SetFont("Interface\\AddOns\\TimeToDrink\\Fonts\\PirataOne-Regular.ttf", 36, "THICKOUTLINE")
+    if fs.GetFont and not fs:GetFont() then fs:SetFont("Fonts\\FRIZQT__.TTF", 26, "THICKOUTLINE") end
     fs:SetPoint("CENTER", a, "CENTER", 0, 0)
     fs:SetJustifyH("CENTER")
     a.elapsed = 0
@@ -294,177 +295,327 @@ function TTD_UpdateLockVisual()
     lock:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 end
 
-function TTD_UpdateReadout()
-    local st = TimeToDrinkStatus
-    if st then
-        if not TTD.selectedHealer then
-            st:SetText("Alerts inactive: no healer selected.")
-        elseif GetNumRaidMembers() > 0 then
-            st:SetText("In a raid: alerts are off.")
-        elseif not TTD_InFivePlayerParty() and TTD.screenAlert then
-            st:SetText("Not in a party: on-screen warnings only.")
-        elseif not TTD_InFivePlayerParty() then
-            st:SetText("Not in a party: alerts start when you join one.")
-        elseif TTD.disabled and TTD.screenAlert then
-            st:SetText("Party chat muted. On-screen warnings active.")
-        elseif TTD.disabled then
-            st:SetText("Alerts muted (quiet mode).")
-        elseif TTD.screenAlert then
-            st:SetText("Party chat and on-screen alerts active.")
-        else
-            st:SetText("Party chat alerts active.")
-        end
-    end
-    local fs = TimeToDrinkReadout
-    if not fs then return end
-    if not TTD.selectedHealer then
-        fs:SetText("Healer mana: (none selected)")
-        fs:SetTextColor(0.7, 0.7, 0.7)
-        return
-    end
-    local unit = TTD_UnitForName(TTD.selectedHealer)
-    if not unit or not UnitExists(unit) then
-        fs:SetText(TTD.selectedHealer .. ": not in party")
-        fs:SetTextColor(0.7, 0.7, 0.7)
-        return
-    end
-    if UnitPowerType(unit) ~= 0 then
-        fs:SetText(TTD.selectedHealer .. " mana: n/a (shapeshifted)")
-        fs:SetTextColor(0.7, 0.7, 0.7)
-        return
-    end
-    local mm = UnitManaMax(unit)
-    if not mm or mm == 0 then
-        fs:SetText(TTD.selectedHealer .. " mana: --")
-        fs:SetTextColor(0.7, 0.7, 0.7)
-        return
-    end
-    local pct = math.floor((UnitMana(unit) / mm) * 100)
-    fs:SetText(TTD.selectedHealer .. " mana: " .. pct .. "%")
-    if TTD.oomEnabled and pct < TTD.oomThreshold then
-        fs:SetTextColor(1.0, 0.2, 0.2)
-    elseif pct < TTD.threshold then
-        fs:SetTextColor(1.0, 0.75, 0.2)
-    else
-        fs:SetTextColor(0.4, 1.0, 0.4)
-    end
+-- ===== UI look =====
+-- Flat dark panel, live mana bar, sliders and switches. Two tabs:
+-- Settings and Messages. Built only from 1.12 widgets.
+local FONT       = "Fonts\\FRIZQT__.TTF"
+local TITLE_FONT = "Interface\\AddOns\\TimeToDrink\\Fonts\\PirataOne-Regular.ttf"
+local WHITE      = "Interface\\Buttons\\WHITE8X8"
+local BAR_TEX    = "Interface\\TargetingFrame\\UI-StatusBar"
+local THUMB_TEX  = "Interface\\Buttons\\UI-SliderBar-Button-Horizontal"
+
+local W, PAD   = 400, 20
+local CW       = W - PAD * 2
+local HEAD_H   = 76
+local BODY_TOP = 118           -- content starts below header + tab bar
+local FOOT_H   = 44
+local H        = 576
+local GAP      = 5             -- Low always stays this far above OOM
+local MAX_CD   = 300
+local CD_STEP  = 5
+
+local C = {
+    bg     = { 0.06, 0.07, 0.09, 0.97 },
+    panel2 = { 0.10, 0.11, 0.14, 1 },
+    field  = { 0.04, 0.05, 0.07, 1 },
+    border = { 0.33, 0.27, 0.13, 1 },
+    line   = { 0.17, 0.18, 0.22, 1 },
+    gold   = { 1.00, 0.83, 0.36 },
+    text   = { 0.93, 0.91, 0.86 },
+    muted  = { 0.66, 0.64, 0.57 },
+    blue   = { 0.27, 0.58, 1.00 },
+    amber  = { 1.00, 0.70, 0.22 },
+    red    = { 0.95, 0.30, 0.32 },
+    green  = { 0.40, 0.80, 0.40 },
+    chat   = { 0.56, 0.79, 1.00 },
+}
+
+local FLAT = {
+    bgFile = WHITE, edgeFile = WHITE, tile = false, tileSize = 0, edgeSize = 1,
+    insets = { left = 0, right = 0, top = 0, bottom = 0 },
+}
+
+local function Skin(f, bg, border)
+    f:SetBackdrop(FLAT)
+    f:SetBackdropColor(bg[1], bg[2], bg[3], bg[4] or 1)
+    f:SetBackdropBorderColor(border[1], border[2], border[3], border[4] or 1)
 end
 
--- ===== UI =====
--- Every widget is anchored straight to the frame's TOPLEFT with a fixed
--- x column, so larger client fonts can't push rows into each other.
-local FRAME_W = 360
-local FRAME_H = 628
-local LABEL_X = 20
-local BOX_X   = 150   -- x where numeric inputs start
-local ROW     = 26
-
-local function UI_Label(f, text, y, font)
-    local fs = f:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
-    fs:SetPoint("TOPLEFT", f, "TOPLEFT", LABEL_X, y)
+local function Text(parent, size, color, flags, font)
+    local fs = parent:CreateFontString(nil, "OVERLAY")
+    fs:SetFont(font or FONT, size, flags or "")
+    if font and fs.GetFont and not fs:GetFont() then fs:SetFont(FONT, size, flags or "") end  -- bundled font missing
+    fs:SetTextColor(color[1], color[2], color[3])
     fs:SetJustifyH("LEFT")
-    fs:SetText(text)
     return fs
 end
 
-local function UI_Divider(f, y)
-    local t = f:CreateTexture(nil, "ARTWORK")
-    t:SetTexture(1, 0.82, 0, 0.25)
-    t:SetHeight(1)
-    t:SetPoint("TOPLEFT", f, "TOPLEFT", LABEL_X - 4, y)
-    t:SetPoint("TOPRIGHT", f, "TOPRIGHT", -(LABEL_X - 4), y)
+local function Tex(parent, layer, col, a)
+    local t = parent:CreateTexture(nil, layer)
+    t:SetTexture(col[1], col[2], col[3], a or col[4] or 1)
     return t
 end
 
--- Numeric box on the same row as a label, with a unit label after it.
-local function UI_NumberBox(f, name, y, maxLetters, getVal, setVal, unitText)
-    local e = CreateFrame("EditBox", name, f, "InputBoxTemplate")
-    e:SetWidth(40); e:SetHeight(20)
-    e:SetPoint("TOPLEFT", f, "TOPLEFT", BOX_X, y + 4)
-    e:SetAutoFocus(false)
-    e:SetMaxLetters(maxLetters)
-    e:SetText("" .. getVal())
-    e:SetScript("OnTextChanged", function()
-        local s = this:GetText()
-        local clean = string.gsub(s, "[^0-9]", "")
-        if clean ~= s then this:SetText(clean) end
-    end)
-    -- NOTE: never call ClearFocus() from OnEditFocusLost; on 1.12 that
-    -- re-fires OnEditFocusLost and overflows the C stack.
-    local busy = false
-    local function commit(box)
-        if busy then return end
-        busy = true
-        setVal(tonumber(box:GetText()))
-        box:SetText("" .. getVal())
-        TTD_SaveAll()
-        busy = false
-    end
-    e:SetScript("OnEnterPressed", function() local box = this; commit(box); box:ClearFocus() end)
-    e:SetScript("OnEditFocusLost", function() commit(this) end)
-    e:SetScript("OnEscapePressed", function()
-        local box = this
-        busy = true
-        box:SetText("" .. getVal())
-        box:ClearFocus()
-        busy = false
-    end)
-
-    local u = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    u:SetPoint("LEFT", e, "RIGHT", 6, 0)
-    u:SetText(unitText)
-    return e
+local function Clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
 end
 
--- Full-width text box for a chat message.
-local function UI_TextBox(f, name, y, getVal, setVal)
-    local e = CreateFrame("EditBox", name, f, "InputBoxTemplate")
-    e:SetWidth(FRAME_W - (LABEL_X * 2) - 8); e:SetHeight(20)
-    e:SetPoint("TOPLEFT", f, "TOPLEFT", LABEL_X + 6, y)
+-- Mana bar with OOM / Low zones and marker lines
+local function MakeManaBar(parent, w, h)
+    local bar = CreateFrame("Frame", nil, parent)
+    bar:SetWidth(w); bar:SetHeight(h)
+    Skin(bar, C.field, { 0, 0, 0, 1 })
+    local inner = w - 2
+
+    local oomZone = Tex(bar, "BACKGROUND", C.red, 0.22)
+    oomZone:SetPoint("TOPLEFT", bar, "TOPLEFT", 1, -1)
+    oomZone:SetHeight(h - 2)
+    local lowZone = Tex(bar, "BACKGROUND", C.amber, 0.15)
+    lowZone:SetHeight(h - 2)
+
+    local sb = CreateFrame("StatusBar", nil, bar)
+    sb:SetPoint("TOPLEFT", bar, "TOPLEFT", 1, -1)
+    sb:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -1, 1)
+    sb:SetStatusBarTexture(BAR_TEX)
+    sb:SetMinMaxValues(0, 100)
+    sb:SetValue(0)
+    sb:SetStatusBarColor(C.blue[1], C.blue[2], C.blue[3])
+
+    local over = CreateFrame("Frame", nil, bar)
+    over:SetAllPoints(bar)
+    over:SetFrameLevel(sb:GetFrameLevel() + 2)
+    local shine = Tex(over, "ARTWORK", { 1, 1, 1 }, 0.10)
+    shine:SetPoint("TOPLEFT", bar, "TOPLEFT", 1, -1)
+    shine:SetPoint("TOPRIGHT", bar, "TOPRIGHT", -1, -1)
+    shine:SetHeight(math.floor(h / 2))
+    local oomLine = Tex(over, "OVERLAY", C.red, 1);   oomLine:SetWidth(2); oomLine:SetHeight(h + 4)
+    local lowLine = Tex(over, "OVERLAY", C.amber, 1); lowLine:SetWidth(2); lowLine:SetHeight(h + 4)
+    local oomLabel = Text(bar, 11, C.red, "OUTLINE")
+    local lowLabel = Text(bar, 11, C.amber, "OUTLINE")
+
+    function bar.SetThresholds(self, low, oom, oomOn)
+        local xo = math.max(1, math.floor(inner * oom / 100))
+        local xl = math.max(xo + 1, math.floor(inner * low / 100))
+        oomZone:SetWidth(xo)
+        lowZone:ClearAllPoints()
+        lowZone:SetPoint("TOPLEFT", bar, "TOPLEFT", 1 + xo, -1)
+        lowZone:SetWidth(xl - xo)
+        oomLine:ClearAllPoints(); oomLine:SetPoint("TOP", bar, "TOPLEFT", 1 + xo, 2)
+        lowLine:ClearAllPoints(); lowLine:SetPoint("TOP", bar, "TOPLEFT", 1 + xl, 2)
+        -- OOM label sits left of its line, Low label right of its line. Each is
+        -- measured and nudged so it stays inside the bar and they never overlap.
+        lowLabel:SetText("Low " .. low .. "%")
+        oomLabel:SetText("OOM " .. oom .. "%")
+        local oomRight = xo - 2
+        if oomOn then
+            local ow = oomLabel:GetStringWidth() or 50
+            if oomRight < ow then oomRight = ow end               -- keep inside left edge
+            oomLabel:Show(); oomLine:Show(); oomZone:Show()
+        else
+            oomRight = 0
+            oomLabel:Hide(); oomLine:Hide(); oomZone:Hide()
+        end
+        local lowLeft = xl + 4
+        if lowLeft < oomRight + 6 then lowLeft = oomRight + 6 end  -- never collide
+        local lw = lowLabel:GetStringWidth() or 50
+        if lowLeft + lw > w then lowLeft = w - lw end              -- keep inside right edge
+        oomLabel:ClearAllPoints(); oomLabel:SetPoint("TOPRIGHT", bar, "BOTTOMLEFT", oomRight, -3)
+        lowLabel:ClearAllPoints(); lowLabel:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", lowLeft, -3)
+    end
+
+    function bar.SetMana(self, pct, low, oom, oomOn)
+        sb:SetValue(pct or 0)
+        local col = C.blue
+        if pct then
+            if oomOn and pct < oom then col = C.red elseif pct < low then col = C.amber end
+        end
+        sb:SetStatusBarColor(col[1], col[2], col[3])
+    end
+    return bar
+end
+
+-- Slider with a colored fill. onChange(v) returns the value it accepted.
+local function MakeSlider(parent, name, w, col, minV, maxV, onChange)
+    local s = CreateFrame("Slider", name, parent)
+    s.quiet = true
+    s:SetOrientation("HORIZONTAL")
+    s:SetWidth(w); s:SetHeight(17)
+    s:SetMinMaxValues(minV, maxV)
+    s:SetValueStep(1)
+    s:SetThumbTexture(THUMB_TEX)
+    s:EnableMouseWheel(true)
+
+    local track = Tex(s, "BACKGROUND", C.line, 1)
+    track:SetPoint("LEFT", s, "LEFT", 0, 0); track:SetPoint("RIGHT", s, "RIGHT", 0, 0); track:SetHeight(6)
+    local fill = Tex(s, "ARTWORK", col, 1)
+    fill:SetPoint("LEFT", track, "LEFT", 0, 0); fill:SetHeight(6)
+
+    local function paint(v)
+        -- the thumb (32px) travels inside the slider, so its center runs 16 .. w-16
+        fill:SetWidth(math.max(1, 16 + (w - 32) * (v - minV) / (maxV - minV)))
+    end
+    s.paint = paint
+    function s.SetQuiet(self, v)
+        s.quiet = true
+        s:SetValue(v)
+        s.quiet = false
+        paint(v)
+    end
+    s:SetScript("OnValueChanged", function()
+        local v = math.floor(arg1 + 0.5)
+        paint(v)
+        if s.quiet then return end
+        local accepted = onChange(v)
+        if accepted and accepted ~= v then s:SetQuiet(accepted) end
+    end)
+    s:SetScript("OnMouseWheel", function()
+        s:SetValue(Clamp(math.floor(s:GetValue() + 0.5) + arg1, minV, maxV))
+    end)
+    return s
+end
+
+local function MakeBadge(parent, col, bg)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetWidth(50); f:SetHeight(20)
+    Skin(f, bg, { col[1] * 0.5, col[2] * 0.5, col[3] * 0.5, 1 })
+    f.text = Text(f, 12, col)
+    f.text:SetPoint("CENTER", f, "CENTER", 0, 0)
+    return f
+end
+
+local function MakeFlatButton(parent, w, h, label, onClick)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetWidth(w); b:SetHeight(h)
+    Skin(b, C.panel2, C.border)
+    b.text = Text(b, 12, C.text)
+    b.text:SetPoint("CENTER", b, "CENTER", 0, 0)
+    b.text:SetText(label)
+    b:SetScript("OnClick", function() onClick(b) end)
+    b:SetScript("OnEnter", function() b:SetBackdropBorderColor(C.gold[1], C.gold[2], C.gold[3], 1) end)
+    b:SetScript("OnLeave", function()
+        if b.selected then b:SetBackdropBorderColor(C.gold[1], C.gold[2], C.gold[3], 1)
+        else b:SetBackdropBorderColor(C.border[1], C.border[2], C.border[3], 1) end
+    end)
+    function b.SetSelected(self, sel)
+        b.selected = sel
+        if sel then
+            b:SetBackdropColor(0.23, 0.20, 0.13, 1)
+            b:SetBackdropBorderColor(C.gold[1], C.gold[2], C.gold[3], 1)
+            b.text:SetTextColor(C.gold[1], C.gold[2], C.gold[3])
+        else
+            b:SetBackdropColor(C.panel2[1], C.panel2[2], C.panel2[3], 1)
+            b:SetBackdropBorderColor(C.border[1], C.border[2], C.border[3], 1)
+            b.text:SetTextColor(C.text[1], C.text[2], C.text[3])
+        end
+    end
+    return b
+end
+
+-- On/off switch row: label on the left, switch on the right
+local function MakeToggle(parent, w, label, hint, get, set)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetWidth(w); b:SetHeight(26)
+    local l = Text(b, 13, C.text)
+    l:SetPoint("LEFT", b, "LEFT", 0, 0)
+    if hint then l:SetText(label .. "  |cffa8a392" .. hint .. "|r") else l:SetText(label) end
+    local track = CreateFrame("Frame", nil, b)
+    track:SetWidth(40); track:SetHeight(20)
+    track:SetPoint("RIGHT", b, "RIGHT", 0, 0)
+    track:EnableMouse(false)
+    local knob = Tex(track, "OVERLAY", { 0.96, 0.95, 0.91 }, 1)
+    knob:SetWidth(16); knob:SetHeight(16)
+    function b.Refresh(self)
+        local on = get()
+        if on then Skin(track, { 0.22, 0.45, 0.22, 1 }, { 0.37, 0.68, 0.35, 1 })
+        else Skin(track, C.line, { 0.23, 0.24, 0.28, 1 }) end
+        knob:ClearAllPoints()
+        if on then knob:SetPoint("RIGHT", track, "RIGHT", -2, 0)
+        else knob:SetPoint("LEFT", track, "LEFT", 2, 0) end
+    end
+    b:SetScript("OnClick", function()
+        set(not get())
+        b:Refresh()
+        TTD_SaveAll()
+        TTD_UpdateReadout()
+    end)
+    b:Refresh()
+    return b
+end
+
+local function HeaderIcon(parent, texture)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetWidth(40); f:SetHeight(40)
+    Skin(f, { 0, 0, 0, 1 }, { 0.66, 0.53, 0.18, 1 })
+    local t = f:CreateTexture(nil, "ARTWORK")
+    t:SetPoint("TOPLEFT", f, "TOPLEFT", 2, -2)
+    t:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, 2)
+    t:SetTexture(texture)
+    t:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    return f
+end
+
+-- Message box: commits on Enter / click-away, Escape cancels, empty = default
+local function MakeMessageBox(parent, name, y, label, getVal, setVal)
+    local l = Text(parent, 12, C.text)
+    l:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD, y)
+    l:SetText(label)
+
+    local e = CreateFrame("EditBox", name, parent)
+    e:SetWidth(CW); e:SetHeight(26)
+    e:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD, y - 16)
+    Skin(e, C.field, C.border)
+    e:SetFont(FONT, 12, "")
+    e:SetTextColor(C.text[1], C.text[2], C.text[3])
+    e:SetTextInsets(8, 8, 0, 0)
     e:SetAutoFocus(false)
     e:SetMaxLetters(MAX_MSG_LEN)
     e:SetText(getVal())
+
+    local pv = Text(parent, 11, C.chat)
+    pv:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD + 2, y - 47)
+    pv:SetWidth(CW - 4); pv:SetHeight(14)
+    e.preview = pv
+    function e.UpdatePreview(self, fromBox)
+        local tmpl = getVal()
+        if fromBox then tmpl = e:GetText() end
+        pv:SetText("[Party] " .. TTD_Format(tmpl, TTD_HealerPct()))
+    end
+
+    -- NOTE: never call ClearFocus() from OnEditFocusLost on 1.12 (stack overflow)
     local busy = false
-    local function commit(box)
+    local function commit()
         if busy then return end
         busy = true
-        setVal(box:GetText())
-        box:SetText(getVal())
+        setVal(e:GetText())
+        e:SetText(getVal())
+        e:UpdatePreview(false)
         TTD_SaveAll()
         busy = false
     end
-    e:SetScript("OnEnterPressed", function() local box = this; commit(box); box:ClearFocus() end)
-    e:SetScript("OnEditFocusLost", function() commit(this) end)
+    e:SetScript("OnEnterPressed", function() commit(); e:ClearFocus() end)
+    e:SetScript("OnEditFocusLost", function() commit() end)
+    e:SetScript("OnEditFocusGained", function() TTD.lastBox = e end)
     e:SetScript("OnEscapePressed", function()
-        local box = this
         busy = true
-        box:SetText(getVal())
-        box:ClearFocus()
+        e:SetText(getVal())
+        e:ClearFocus()
+        e:UpdatePreview(false)
         busy = false
     end)
+    e:SetScript("OnTextChanged", function() e:UpdatePreview(true) end)
+    e.getVal = getVal
     return e
 end
 
-local function UI_Check(f, name, text, y, getVal, setVal)
-    local cb = CreateFrame("CheckButton", name, f, "UICheckButtonTemplate")
-    cb:SetWidth(24); cb:SetHeight(24)
-    cb:SetPoint("TOPLEFT", f, "TOPLEFT", LABEL_X - 5, y + 6)
-    local t = getglobal(name .. "Text")
-    if t then t:SetText(text) end
-    TTD_SetCheck(cb, getVal())
-    cb:SetScript("OnClick", function()
-        if this:GetChecked() then setVal(true) else setVal(false) end
-        TTD_SaveAll()
-    end)
-    return cb
-end
-
+-- ===== Build the window =====
 local function TTD_CreateUI()
     if TimeToDrinkUI then return end
 
     local f = CreateFrame("Frame", "TimeToDrinkUI", UIParent)
-    f:SetWidth(FRAME_W)
-    f:SetHeight(FRAME_H)
+    f:SetWidth(W); f:SetHeight(H)
+    Skin(f, C.bg, C.border)
     f:SetFrameStrata("DIALOG")
     f:SetClampedToScreen(true)
     if TTD.pos and TTD.pos.point and TTD.pos.relPoint and TTD.pos.x and TTD.pos.y then
@@ -472,214 +623,361 @@ local function TTD_CreateUI()
     else
         f:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
     end
-    f:SetBackdrop({
-        bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        tile = true, tileSize = 32, edgeSize = 32,
-        insets = { left = 11, right = 12, top = 12, bottom = 11 },
-    })
     f:SetMovable(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", function() if not TTD.locked then this:StartMoving() end end)
+    f:SetScript("OnDragStart", function() if not TTD.locked then f:StartMoving() end end)
     f:SetScript("OnDragStop", function()
-        this:StopMovingOrSizing()
-        local point, _, relPoint, x, y = this:GetPoint()
+        f:StopMovingOrSizing()
+        local point, _, relPoint, x, y = f:GetPoint()
         TTD.pos = { point = point, relPoint = relPoint, x = x, y = y }
     end)
     f:Hide()
-    -- Escape closes the window
-    table.insert(UISpecialFrames, "TimeToDrinkUI")
+    table.insert(UISpecialFrames, "TimeToDrinkUI")   -- Escape closes it
 
-    -- ===== Header: larger title flanked by drink icons =====
-    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetFont("Fonts\\FRIZQT__.TTF", 20, "OUTLINE")
-    title:SetTextColor(1.0, 0.82, 0.0)
-    title:SetPoint("TOP", f, "TOP", -10, -20)   -- nudged left to clear the lock/close buttons
+    -- Header ----------------------------------------------------------
+    local head = CreateFrame("Frame", nil, f)
+    head:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -1)
+    head:SetPoint("TOPRIGHT", f, "TOPRIGHT", -1, -1)
+    head:SetHeight(HEAD_H)
+    Skin(head, C.panel2, { 0, 0, 0, 0 })
+    local hl = Tex(f, "ARTWORK", C.border, 1)
+    hl:SetPoint("TOPLEFT", head, "BOTTOMLEFT", 0, 0)
+    hl:SetPoint("TOPRIGHT", head, "BOTTOMRIGHT", 0, 0)
+    hl:SetHeight(1)
+
+    -- Title + tagline form one centered block. The icons sit outside the WIDER
+    -- of the two lines with a fixed buffer, so they never cover any text.
+    local ICON, BUFFER, CORNER = 40, 18, 34     -- CORNER = room kept for the corner buttons
+    local maxHalf = W / 2 - ICON - CORNER       -- widest the text block may be (half)
+    -- The 1.12 engine caps how large it draws a font, so a bigger font size
+    -- alone can't enlarge the title. Instead the title lives in its own small
+    -- frame that is scaled up. TITLE_SCALE is the knob for title size.
+    local TITLE_SCALE = 1.5
+    local titleSize, tagSize = 30, 11
+    -- Vertical placement, measured from the header's center line (= icon center).
+    -- Positive is up. Tweak these two numbers to nudge the lines.
+    local TITLE_Y, TAG_Y = 10, -17
+
+    local tframe = CreateFrame("Frame", nil, head)
+    tframe:SetScale(TITLE_SCALE)
+    tframe:SetWidth(W / TITLE_SCALE); tframe:SetHeight(60)
+    -- a scaled frame's offsets are in its own (scaled) units, hence the division
+    tframe:SetPoint("CENTER", head, "CENTER", 0, TITLE_Y / TITLE_SCALE)
+    local title = Text(tframe, titleSize, C.gold, "OUTLINE", TITLE_FONT)
+    title:SetShadowColor(0, 0, 0, 0.8)
+    title:SetShadowOffset(0, -2)
     title:SetText("Time To Drink")
+    title:SetPoint("CENTER", tframe, "CENTER", 0, 0)
 
-    -- Icon in a thin gold frame. Cropping the texcoords trims the default
-    -- icon border so the frame sits cleanly around it.
-    local function HeaderIcon(texture, side)
-        local holder = CreateFrame("Frame", nil, f)
-        holder:SetWidth(30); holder:SetHeight(30)
-        holder:SetBackdrop({
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            edgeSize = 10,
-            insets = { left = 2, right = 2, top = 2, bottom = 2 },
-        })
-        holder:SetBackdropBorderColor(1.0, 0.82, 0.0, 0.9)
-        if side == "LEFT" then
-            holder:SetPoint("RIGHT", title, "LEFT", -10, 0)
-        else
-            holder:SetPoint("LEFT", title, "RIGHT", 10, 0)
-        end
-        local icon = holder:CreateTexture(nil, "ARTWORK")
-        icon:SetWidth(24); icon:SetHeight(24)
-        icon:SetPoint("CENTER", holder, "CENTER", 0, 0)
-        icon:SetTexture(texture)
-        icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    local tag = Text(head, tagSize, C.muted)
+    tag:SetText("Keep your healer hydrated")
+    tag:SetPoint("CENTER", head, "CENTER", 0, TAG_Y)
+    -- shrink the tagline until it fits between the icons
+    while tagSize > 8 and (tag:GetStringWidth() or 0) / 2 + BUFFER > maxHalf do
+        tagSize = tagSize - 1
+        tag:SetFont(FONT, tagSize, "")
     end
-    HeaderIcon("Interface\\Icons\\INV_Drink_18", "LEFT")    -- Conjured Crystal Water
-    HeaderIcon("Interface\\Icons\\INV_Drink_10", "RIGHT")   -- Morning Glory Dew
-
-    local tagline = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    tagline:SetPoint("TOP", title, "BOTTOM", 0, -6)
-    tagline:SetText("Keep your healer hydrated")
-
-    UI_Divider(f, -60)
+    -- title width on screen = its own width x the frame scale
+    local titleW = (title:GetStringWidth() or 110) * TITLE_SCALE
+    local textHalf = math.max(titleW, tag:GetStringWidth() or 120) / 2
+    local offset = textHalf + BUFFER + ICON / 2
+    HeaderIcon(head, "Interface\\Icons\\INV_Drink_18"):SetPoint("CENTER", head, "CENTER", -offset, 0)
+    HeaderIcon(head, "Interface\\Icons\\INV_Drink_10"):SetPoint("CENTER", head, "CENTER", offset, 0)
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -5, -5)
-
+    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -2)
     local lock = CreateFrame("Button", "TimeToDrinkLockButton", f)
     lock:SetWidth(24); lock:SetHeight(24)
-    lock:SetPoint("RIGHT", close, "LEFT", 2, 0)
-    lock:SetScript("OnClick", function()
-        TTD.locked = not TTD.locked
-        TTD_UpdateLockVisual()
-    end)
+    lock:SetPoint("TOPLEFT", f, "TOPLEFT", 6, -6)   -- top-left, so it never crowds the right-hand icon
+    lock:SetScript("OnClick", function() TTD.locked = not TTD.locked; TTD_UpdateLockVisual() end)
     TTD_UpdateLockVisual()
 
-    local y = -76
+    -- Tabs --------------------------------------------------------------
+    local pages = {}
+    TTD.tabButtons = {}
+    local function ShowTab(key)
+        TTD.tab = key
+        local k, p
+        for k, p in pairs(pages) do if k == key then p:Show() else p:Hide() end end
+        local i = 1
+        while i <= table.getn(TTD.tabButtons) do
+            local b = TTD.tabButtons[i]
+            b:SetSelected(b.key == key)
+            i = i + 1
+        end
+    end
+    TTD.ShowTab = ShowTab
+    local tabDefs = { { "settings", "Settings" }, { "messages", "Messages" } }
+    local tx = PAD
+    local ti = 1
+    while ti <= 2 do
+        local key = tabDefs[ti][1]
+        local b = MakeFlatButton(f, 110, 26, tabDefs[ti][2], function() ShowTab(key) end)
+        b.key = key
+        b:SetPoint("TOPLEFT", f, "TOPLEFT", tx, -(HEAD_H + 8))
+        tx = tx + 116
+        table.insert(TTD.tabButtons, b)
+        ti = ti + 1
+    end
+    local tl = Tex(f, "ARTWORK", C.line, 1)
+    tl:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -(BODY_TOP - 2))
+    tl:SetWidth(CW); tl:SetHeight(1)
 
-    -- Healer selector (label left, dropdown right, same row)
-    UI_Label(f, "Healer", y)
-    local dd = CreateFrame("Frame", "TimeToDrinkHealerDropdown", f, "UIDropDownMenuTemplate")
-    dd:SetPoint("TOPLEFT", f, "TOPLEFT", BOX_X - 18, y + 10)
-    UIDropDownMenu_SetWidth(150, dd)
-    y = y - 34
+    local function MakePage(key)
+        local p = CreateFrame("Frame", nil, f)
+        p:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -BODY_TOP)
+        p:SetWidth(W); p:SetHeight(H - BODY_TOP - FOOT_H)
+        pages[key] = p
+        return p
+    end
 
-    -- General
-    UI_NumberBox(f, "TimeToDrinkCooldownEdit", y, 4,
-        function() return TTD.cooldown end,
-        function(v) TTD.cooldown = TTD_ClampCooldown(v) end,
-        "sec")
-    UI_Label(f, "Repeat alerts every", y)
-    y = y - ROW
+    -- ===== Settings page =====
+    local s = MakePage("settings")
 
-    UI_Check(f, "TimeToDrinkDisableCheck", "Mute party chat alerts", y,
-        function() return TTD.disabled end,
-        function(v) TTD.disabled = v; dbg("disabled = " .. tostring(v)); TTD_UpdateReadout() end)
-    y = y - ROW
+    local hlab = Text(s, 11, C.muted)
+    hlab:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, -14)
+    hlab:SetText("HEALER")
+    local dd = CreateFrame("Frame", "TimeToDrinkHealerDropdown", s, "UIDropDownMenuTemplate")
+    dd:SetPoint("TOPLEFT", s, "TOPLEFT", PAD + 44, -2)
+    UIDropDownMenu_SetWidth(200, dd)
 
-    UI_Check(f, "TimeToDrinkScreenCheck", "On-screen warning (only you see it)", y,
-        function() return TTD.screenAlert end,
-        function(v) TTD.screenAlert = v; TTD_UpdateReadout() end)
-    y = y - ROW
+    local nameText = Text(s, 14, C.text)
+    nameText:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, -46)
+    local pctText = Text(s, 14, C.blue)
+    pctText:SetPoint("TOPRIGHT", s, "TOPRIGHT", -PAD, -46)
+    pctText:SetJustifyH("RIGHT")
+    TTD.nameText, TTD.pctText = nameText, pctText
 
-    UI_Check(f, "TimeToDrinkSoundCheck", "Play sound with warning", y,
-        function() return TTD.screenSound end,
-        function(v) TTD.screenSound = v end)
-    local tb = CreateFrame("Button", "TimeToDrinkScreenTestButton", f, "UIPanelButtonTemplate")
-    tb:SetWidth(60); tb:SetHeight(22)
-    tb:SetPoint("TOPRIGHT", f, "TOPRIGHT", -LABEL_X, y + 6)
-    tb:SetText("Test")
-    tb:SetScript("OnClick", function()
-        TTD_ShowScreenAlert(TTD_Format(TTD.lowMsg, TTD_HealerPct()), "LOW")
+    local bar = MakeManaBar(s, CW, 24)
+    bar:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, -66)
+    TTD.bar = bar
+
+    -- threshold card
+    local card = CreateFrame("Frame", nil, s)
+    card:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, -114)
+    card:SetWidth(CW); card:SetHeight(124)
+    Skin(card, C.panel2, C.line)
+    local IW = CW - 32
+
+    local lowLabel = Text(card, 13, C.text)
+    lowLabel:SetPoint("TOPLEFT", card, "TOPLEFT", 16, -12)
+    lowLabel:SetText("Low mana alert below")
+    TTD.lowBadge = MakeBadge(card, C.amber, { 0.23, 0.17, 0.05, 1 })
+    TTD.lowBadge:SetPoint("TOPRIGHT", card, "TOPRIGHT", -16, -9)
+    TTD.lowSlider = MakeSlider(card, "TimeToDrinkLowSlider", IW, C.amber, 1, 100, function(v)
+        if v < TTD.oomThreshold + GAP then v = TTD.oomThreshold + GAP end
+        TTD.threshold = Clamp(v, 1, 100)
+        TTD_RefreshThresholds()
+        return TTD.threshold
     end)
-    y = y - ROW - 4
+    TTD.lowSlider:SetPoint("TOPLEFT", card, "TOPLEFT", 16, -32)
 
-    -- Low mana section
-    UI_Divider(f, y + 6)
-    UI_Label(f, "Low mana alert", y - 4, "GameFontNormal")
-    y = y - 28
+    local oomLabel = Text(card, 13, C.text)
+    oomLabel:SetPoint("TOPLEFT", card, "TOPLEFT", 16, -62)
+    oomLabel:SetText("OOM alert below")
+    TTD.oomBadge = MakeBadge(card, C.red, { 0.23, 0.07, 0.08, 1 })
+    TTD.oomBadge:SetPoint("TOPRIGHT", card, "TOPRIGHT", -16, -59)
+    TTD.oomSlider = MakeSlider(card, "TimeToDrinkOOMSlider", IW, C.red, 1, 100 - GAP, function(v)
+        TTD.oomThreshold = Clamp(v, 1, 100 - GAP)
+        if TTD.threshold < TTD.oomThreshold + GAP then TTD.threshold = TTD.oomThreshold + GAP end  -- push Low up
+        TTD_RefreshThresholds()
+        return TTD.oomThreshold
+    end)
+    TTD.oomSlider:SetPoint("TOPLEFT", card, "TOPLEFT", 16, -82)
+    local note = Text(card, 11, C.muted)
+    note:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 16, 8)
+    note:SetText("Low always stays " .. GAP .. "% above OOM. Raising OOM pushes Low up.")
 
-    UI_Label(f, "Alert below", y)
-    UI_NumberBox(f, "TimeToDrinkThresholdEdit", y, 3,
-        function() return TTD.threshold end,
-        function(v) TTD.threshold = TTD_ClampThreshold(v, TTD.threshold) end,
-        "% mana")
-    y = y - ROW
+    -- repeat stepper
+    local rl = Text(s, 13, C.text)
+    rl:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, -258)
+    rl:SetText("Repeat alerts every")
+    local plus = MakeFlatButton(s, 28, 24, "+", function()
+        TTD.cooldown = Clamp(TTD.cooldown + CD_STEP, MIN_COOLDOWN, MAX_CD); TTD_RefreshFields(); TTD_SaveAll()
+    end)
+    plus:SetPoint("TOPRIGHT", s, "TOPRIGHT", -PAD, -252)
+    local cdText = Text(s, 13, C.text)
+    cdText:SetWidth(56); cdText:SetJustifyH("CENTER")
+    cdText:SetPoint("RIGHT", plus, "LEFT", -8, 0)
+    local minus = MakeFlatButton(s, 28, 24, "-", function()
+        TTD.cooldown = Clamp(TTD.cooldown - CD_STEP, MIN_COOLDOWN, MAX_CD); TTD_RefreshFields(); TTD_SaveAll()
+    end)
+    minus:SetPoint("RIGHT", cdText, "LEFT", -8, 0)
+    TTD.cdText = cdText
 
-    UI_Label(f, "Message", y)
-    y = y - 16
-    UI_TextBox(f, "TimeToDrinkLowMsgEdit", y,
-        function() return TTD.lowMsg end,
-        function(v) TTD.lowMsg = TTD_CleanMessage(v, DEFAULT_LOW_MSG) end)
-    y = y - 34
+    -- switches
+    local toggles = {
+        { "Party chat alerts", nil,
+          function() return not TTD.disabled end, function(v) TTD.disabled = not v end },
+        { "OOM alert", "(second, lower alert)",
+          function() return TTD.oomEnabled end, function(v) TTD.oomEnabled = v; TTD_RefreshThresholds() end },
+        { "On-screen warning", "(only you see it)",
+          function() return TTD.screenAlert end, function(v) TTD.screenAlert = v end },
+        { "Play sound with warning", nil,
+          function() return TTD.screenSound end, function(v) TTD.screenSound = v end },
+    }
+    TTD.toggles = {}
+    local ty = -288
+    local i = 1
+    while i <= table.getn(toggles) do
+        local t = toggles[i]
+        local tg = MakeToggle(s, CW, t[1], t[2], t[3], t[4])
+        tg:SetPoint("TOPLEFT", s, "TOPLEFT", PAD, ty)
+        table.insert(TTD.toggles, tg)
+        ty = ty - 28
+        i = i + 1
+    end
 
-    -- OOM section
-    UI_Divider(f, y + 6)
-    UI_Label(f, "Out of mana (OOM) alert", y - 4, "GameFontNormal")
-    y = y - 28
+    -- ===== Messages page =====
+    local m = MakePage("messages")
+    local hint = Text(m, 11, C.muted)
+    hint:SetPoint("TOPLEFT", m, "TOPLEFT", PAD, -12)
+    hint:SetText("Click a token to insert it into the box you are editing:")
+    local cx = PAD
+    local tokens = { "{healer}", "{mana}", "{threshold}", "{oom}" }
+    i = 1
+    while i <= 4 do
+        local token = tokens[i]
+        local w = 18 + string.len(token) * 6
+        local chip = MakeFlatButton(m, w, 22, token, function()
+            local box = TTD.lastBox or TimeToDrinkLowMsgEdit
+            box:SetFocus()
+            box:Insert(token)
+        end)
+        chip.text:SetFont(FONT, 11, "")
+        chip.text:SetTextColor(C.gold[1], C.gold[2], C.gold[3])
+        chip:SetPoint("TOPLEFT", m, "TOPLEFT", cx, -28)
+        cx = cx + w + 6
+        i = i + 1
+    end
 
-    UI_Check(f, "TimeToDrinkOOMCheck", "Send OOM alert", y,
-        function() return TTD.oomEnabled end,
-        function(v) TTD.oomEnabled = v end)
-    y = y - ROW
+    TTD.msgBoxes = {
+        MakeMessageBox(m, "TimeToDrinkLowMsgEdit", -66, "Low mana message",
+            function() return TTD.lowMsg end,
+            function(v) TTD.lowMsg = TTD_CleanMessage(v, DEFAULT_LOW_MSG) end),
+        MakeMessageBox(m, "TimeToDrinkOOMMsgEdit", -136, "OOM message",
+            function() return TTD.oomMsg end,
+            function(v) TTD.oomMsg = TTD_CleanMessage(v, DEFAULT_OOM_MSG) end),
+        MakeMessageBox(m, "TimeToDrinkSetMsgEdit", -206, "Healer picked message",
+            function() return TTD.setMsg end,
+            function(v) TTD.setMsg = TTD_CleanMessage(v, DEFAULT_SET_MSG) end),
+    }
+    local mh = Text(m, 11, C.muted)
+    mh:SetPoint("TOPLEFT", m, "TOPLEFT", PAD, -274)
+    mh:SetText("Enter saves, Escape cancels. An empty box goes back to its default.")
 
-    UI_Label(f, "OOM below", y)
-    UI_NumberBox(f, "TimeToDrinkOOMThresholdEdit", y, 3,
-        function() return TTD.oomThreshold end,
-        function(v) TTD.oomThreshold = TTD_ClampThreshold(v, TTD.oomThreshold) end,
-        "% mana")
-    y = y - ROW
-
-    UI_Label(f, "Message", y)
-    y = y - 16
-    UI_TextBox(f, "TimeToDrinkOOMMsgEdit", y,
-        function() return TTD.oomMsg end,
-        function(v) TTD.oomMsg = TTD_CleanMessage(v, DEFAULT_OOM_MSG) end)
-    y = y - 34
-
-    -- Healer-set announcement
-    UI_Divider(f, y + 6)
-    UI_Label(f, "Healer selected message", y - 4, "GameFontNormal")
-    y = y - 24
-    UI_TextBox(f, "TimeToDrinkSetMsgEdit", y,
-        function() return TTD.setMsg end,
-        function(v) TTD.setMsg = TTD_CleanMessage(v, DEFAULT_SET_MSG) end)
-    y = y - 32
-
-    -- Token help (own line) + defaults button (centered underneath)
-    UI_Label(f, "Tokens: {healer} {mana} {threshold} {oom}", y, "GameFontDisableSmall")
-    y = y - 20
-    local rb = CreateFrame("Button", "TimeToDrinkDefaultsButton", f, "UIPanelButtonTemplate")
-    rb:SetWidth(130); rb:SetHeight(22)
-    rb:SetPoint("TOP", f, "TOP", 0, y)
-    rb:SetText("Reset messages")
-    rb:SetScript("OnClick", function()
-        TTD.lowMsg = DEFAULT_LOW_MSG
-        TTD.oomMsg = DEFAULT_OOM_MSG
-        TTD.setMsg = DEFAULT_SET_MSG
-        TTD_SaveAll()
-        TTD_RefreshFields()
+    local reset = MakeFlatButton(m, 150, 26, "Reset messages", function()
+        TTD.lowMsg, TTD.oomMsg, TTD.setMsg = DEFAULT_LOW_MSG, DEFAULT_OOM_MSG, DEFAULT_SET_MSG
+        TTD_SaveAll(); TTD_RefreshFields()
         msg("messages reset to defaults.")
     end)
-    y = y - 36
+    reset:SetPoint("TOPLEFT", m, "TOPLEFT", PAD, -300)
+    local test = MakeFlatButton(m, 150, 26, "Test on-screen warning", function()
+        TTD_ShowScreenAlert(TTD_Format(TTD.lowMsg, TTD_HealerPct()), "LOW")
+    end)
+    test:SetPoint("TOPRIGHT", m, "TOPRIGHT", -PAD, -300)
 
-    -- Live readout + status, both centered at the bottom of the panel
-    UI_Divider(f, y + 6)
-    -- Footer byline
-    local byline = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    byline:SetPoint("BOTTOM", f, "BOTTOM", 0, 18)
-    byline:SetJustifyH("CENTER")
-    byline:SetTextColor(0.75, 0.62, 0.35)
-    byline:SetText("Updated by the premier healer: Jifferoni")
+    -- Footer ------------------------------------------------------------
+    local foot = CreateFrame("Frame", nil, f)
+    foot:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 1, 1)
+    foot:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -1, 1)
+    foot:SetHeight(FOOT_H)
+    Skin(foot, C.panel2, { 0, 0, 0, 0 })
+    local fl = Tex(f, "ARTWORK", C.border, 1)
+    fl:SetPoint("BOTTOMLEFT", foot, "TOPLEFT", 0, 0)
+    fl:SetPoint("BOTTOMRIGHT", foot, "TOPRIGHT", 0, 0)
+    fl:SetHeight(1)
+    local status = Text(foot, 11, C.green)
+    status:SetPoint("TOP", foot, "TOP", 0, -8)
+    TTD.statusText = status
+    local by = Text(foot, 11, { 0.72, 0.60, 0.35 })
+    by:SetPoint("BOTTOM", foot, "BOTTOM", 0, 8)
+    by:SetText("Updated by Jifferoni - The premiere healer")
 
-    local status = f:CreateFontString("TimeToDrinkStatus", "OVERLAY", "GameFontDisableSmall")
-    status:SetPoint("BOTTOM", byline, "TOP", 0, 6)
-    status:SetJustifyH("CENTER")
-    status:SetText("Pick a healer to activate alerts.")
+    ShowTab(TTD.tab or "settings")
+end
 
-    local readout = f:CreateFontString("TimeToDrinkReadout", "OVERLAY", "GameFontNormal")
-    readout:SetPoint("BOTTOM", status, "TOP", 0, 6)
-    readout:SetJustifyH("CENTER")
-    readout:SetText("Healer mana: (none selected)")
+-- ===== Refresh helpers =====
+function TTD_RefreshThresholds()
+    if not TTD.lowSlider then return end
+    TTD.lowSlider:SetQuiet(TTD.threshold)
+    TTD.oomSlider:SetQuiet(TTD.oomThreshold)
+    TTD.lowBadge.text:SetText(TTD.threshold .. "%")
+    TTD.oomBadge.text:SetText(TTD.oomThreshold .. "%")
+    if TTD.oomEnabled then
+        TTD.oomSlider:SetAlpha(1); TTD.oomBadge:SetAlpha(1)
+    else
+        TTD.oomSlider:SetAlpha(0.4); TTD.oomBadge:SetAlpha(0.4)
+    end
+    TTD.bar:SetThresholds(TTD.threshold, TTD.oomThreshold, TTD.oomEnabled)
+    TTD_SaveAll()
+    TTD_UpdateReadout()
 end
 
 function TTD_RefreshFields()
-    if TimeToDrinkThresholdEdit    then TimeToDrinkThresholdEdit:SetText("" .. TTD.threshold) end
-    if TimeToDrinkCooldownEdit     then TimeToDrinkCooldownEdit:SetText("" .. TTD.cooldown) end
-    if TimeToDrinkOOMThresholdEdit then TimeToDrinkOOMThresholdEdit:SetText("" .. TTD.oomThreshold) end
-    if TimeToDrinkLowMsgEdit       then TimeToDrinkLowMsgEdit:SetText(TTD.lowMsg) end
-    if TimeToDrinkOOMMsgEdit       then TimeToDrinkOOMMsgEdit:SetText(TTD.oomMsg) end
-    if TimeToDrinkSetMsgEdit       then TimeToDrinkSetMsgEdit:SetText(TTD.setMsg) end
-    if TimeToDrinkDisableCheck     then TTD_SetCheck(TimeToDrinkDisableCheck, TTD.disabled) end
-    if TimeToDrinkOOMCheck         then TTD_SetCheck(TimeToDrinkOOMCheck, TTD.oomEnabled) end
-    if TimeToDrinkScreenCheck      then TTD_SetCheck(TimeToDrinkScreenCheck, TTD.screenAlert) end
-    if TimeToDrinkSoundCheck       then TTD_SetCheck(TimeToDrinkSoundCheck, TTD.screenSound) end
+    if not TimeToDrinkUI then return end
+    TTD.cdText:SetText(TTD.cooldown .. " sec")
+    local i = 1
+    while i <= table.getn(TTD.toggles) do TTD.toggles[i]:Refresh(); i = i + 1 end
+    i = 1
+    while i <= table.getn(TTD.msgBoxes) do
+        local e = TTD.msgBoxes[i]
+        e:SetText(e.getVal())
+        e:UpdatePreview(false)
+        i = i + 1
+    end
+    TTD_RefreshThresholds()
+end
+
+function TTD_UpdateReadout()
+    local st = TTD.statusText
+    if st then
+        local text, col
+        if not TTD.selectedHealer then
+            text, col = "Pick a healer to activate alerts", C.muted
+        elseif GetNumRaidMembers() > 0 then
+            text, col = "In a raid: alerts are off", C.muted
+        elseif not TTD_InFivePlayerParty() and TTD.screenAlert then
+            text, col = "Solo: on-screen warnings only", C.green
+        elseif not TTD_InFivePlayerParty() then
+            text, col = "Solo: alerts start when you join a party", C.muted
+        elseif TTD.disabled and TTD.screenAlert then
+            text, col = "Party chat off, on-screen warnings on", C.green
+        elseif TTD.disabled then
+            text, col = "All alerts off", C.muted
+        elseif TTD.screenAlert then
+            text, col = "Party + on-screen alerts active", C.green
+        else
+            text, col = "Party chat alerts active", C.green
+        end
+        st:SetText(text)
+        st:SetTextColor(col[1], col[2], col[3])
+    end
+
+    if not TTD.nameText then return end
+    local function grey(t)
+        TTD.pctText:SetText(t)
+        TTD.pctText:SetTextColor(C.muted[1], C.muted[2], C.muted[3])
+        TTD.bar:SetMana(nil, TTD.threshold, TTD.oomThreshold, TTD.oomEnabled)
+    end
+    if not TTD.selectedHealer then
+        TTD.nameText:SetText("No healer selected")
+        return grey("")
+    end
+    TTD.nameText:SetText(TTD.selectedHealer)
+    local unit = TTD_UnitForName(TTD.selectedHealer)
+    if not unit or not UnitExists(unit) then return grey("not in party") end
+    if UnitPowerType(unit) ~= 0 then return grey("shapeshifted") end
+    local mm = UnitManaMax(unit)
+    if not mm or mm == 0 then return grey("--") end
+    local pct = (UnitMana(unit) / mm) * 100
+    local col = C.blue
+    if TTD.oomEnabled and pct < TTD.oomThreshold then col = C.red
+    elseif pct < TTD.threshold then col = C.amber end
+    TTD.pctText:SetText(math.floor(pct) .. "% mana")
+    TTD.pctText:SetTextColor(col[1], col[2], col[3])
+    TTD.bar:SetMana(pct, TTD.threshold, TTD.oomThreshold, TTD.oomEnabled)
 end
 
 function TTD_ShowUI()
@@ -768,6 +1066,8 @@ driver:SetScript("OnEvent", function()
         if db.mmbHidden ~= nil then TTD.mmbHidden = db.mmbHidden end
         if db.oomEnabled ~= nil then TTD.oomEnabled = db.oomEnabled end
         if db.oomThreshold then TTD.oomThreshold = TTD_ClampThreshold(db.oomThreshold, 10) end
+        if TTD.oomThreshold > 95 then TTD.oomThreshold = 95 end
+        if TTD.threshold < TTD.oomThreshold + 5 then TTD.threshold = TTD.oomThreshold + 5 end
         TTD.lowMsg = TTD_CleanMessage(db.lowMsg, DEFAULT_LOW_MSG)
         TTD.oomMsg = TTD_CleanMessage(db.oomMsg, DEFAULT_OOM_MSG)
         TTD.setMsg = TTD_CleanMessage(db.setMsg, DEFAULT_SET_MSG)
@@ -947,7 +1247,7 @@ SlashCmdList["TIMETODRINK"] = function(arg)
 
     if cmd == "oom" then
         TTD.oomEnabled = not TTD.oomEnabled
-        if TimeToDrinkOOMCheck then TTD_SetCheck(TimeToDrinkOOMCheck, TTD.oomEnabled) end
+        TTD_RefreshFields()
         TTD_SaveAll()
         msg("OOM alert " .. (TTD.oomEnabled and ("ON (below " .. TTD.oomThreshold .. "%)") or "OFF"))
         return
@@ -955,7 +1255,7 @@ SlashCmdList["TIMETODRINK"] = function(arg)
 
     if cmd == "screen" then
         TTD.screenAlert = not TTD.screenAlert
-        if TimeToDrinkScreenCheck then TTD_SetCheck(TimeToDrinkScreenCheck, TTD.screenAlert) end
+        TTD_RefreshFields()
         TTD_SaveAll()
         msg("on-screen warning " .. (TTD.screenAlert and "ON" or "OFF"))
         if TTD.screenAlert then TTD_ShowScreenAlert(TTD_Format(TTD.lowMsg, TTD_HealerPct()), "LOW") end
@@ -982,14 +1282,14 @@ SlashCmdList["TIMETODRINK"] = function(arg)
 
     if cmd == "enable" then
         TTD.disabled = false
-        if TimeToDrinkDisableCheck then TTD_SetCheck(TimeToDrinkDisableCheck, false) end
+        TTD_SaveAll(); TTD_RefreshFields(); TTD_UpdateReadout()
         msg("alerts ENABLED (pick a healer to activate).")
         return
     end
 
     if cmd == "disable" then
         TTD.disabled = true
-        if TimeToDrinkDisableCheck then TTD_SetCheck(TimeToDrinkDisableCheck, true) end
+        TTD_SaveAll(); TTD_RefreshFields(); TTD_UpdateReadout()
         msg("alerts DISABLED (muted).")
         return
     end
@@ -1009,4 +1309,4 @@ SlashCmdList["TIMETODRINK"] = function(arg)
     if not ok then err(e) end
 end
 
-msg("loaded v1.3.4. /ttd to open, /ttd preview, /ttd oom, /ttd screen, /ttd status. (5-man parties only)")
+msg("loaded v1.4.3. /ttd to open, /ttd preview, /ttd oom, /ttd screen, /ttd status. (5-man parties only)")
