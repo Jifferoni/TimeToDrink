@@ -893,7 +893,7 @@ local function TTD_CreateUI()
     TTD.statusText = status
     local by = Text(foot, 11, { 0.72, 0.60, 0.35 })
     by:SetPoint("BOTTOM", foot, "BOTTOM", 0, 8)
-    by:SetText("Updated by Jifferoni - The premiere healer")
+    by:SetText("Updated by Jifferoni - The premier healer")
 
     ShowTab(TTD.tab or "settings")
 end
