@@ -1,7 +1,7 @@
 <img width="1584" height="672" alt="image" src="https://github.com/user-attachments/assets/2b14e4c7-da52-47f9-b9d9-f9b00892ad2e" />
 
 
-Time To Drink - Octowow / vanilla 1.12 addon  v1.3.4
+Time To Drink - Octowow / vanilla 1.12 addon  v1.4.3
 ==================================================
 
 WHAT IT DOES
